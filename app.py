@@ -21,6 +21,7 @@ def load_data_from_db(db_path, table_name):
         df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
         conn.close()
         
+        # Corrección dinámica de tipos (SQLite -> Pandas)
         for col in df.columns:
             if pd.api.types.is_float_dtype(df[col]):
                 s_dropna = df[col].dropna()
@@ -58,16 +59,13 @@ def motor_visualizacion(df, conf):
         pivot = pivot.fillna(0)
         pivot = pivot.reset_index()
         
-        # Limpiar nombres de columnas
         pivot.columns = [limpiar_decimales_cero(col) if not isinstance(col, tuple) else " - ".join(map(limpiar_decimales_cero, col)) for col in pivot.columns]
         
-        # Re-convertir los valores de la tabla a Int64 para la UI web
         for col in pivot.columns:
             if pd.api.types.is_float_dtype(pivot[col]):
                 s_dropna = pivot[col].dropna()
                 if not s_dropna.empty and s_dropna.apply(float.is_integer).all():
                     pivot[col] = pivot[col].astype('Int64')
-                    
         return pivot
 
     # 2. MODO GRÁFICOS
@@ -75,11 +73,11 @@ def motor_visualizacion(df, conf):
     df_grp = df_calc.groupby(group_vars, dropna=False)[conf['metrica']].agg(funcion_agg).reset_index()
     df_grp = df_grp.rename(columns={conf['metrica']: 'Valor'})
     
-    df_grp = df_grp.sort_values(by=group_vars)
-
+    # Normalizar etiquetas de nulos
     for col in group_vars:
         df_grp[col] = df_grp[col].astype(str).replace({"<NA>": "Sin Especificar", "nan": "Sin Especificar", "None": "Sin Especificar"})
     
+    # Crear etiqueta de eje X (Anidada o Simple)
     eje_x = " - ".join(vars_x)
     if len(vars_x) > 1:
         df_grp[eje_x] = df_grp[vars_x].agg(' - '.join, axis=1)
@@ -93,9 +91,25 @@ def motor_visualizacion(df, conf):
         else:
             df_grp[eje_color] = df_grp[vars_y[0]]
 
+    # --- LÓGICA DE ORDENAMIENTO ROBUSTA (ORDENAR POR TOTAL DE BARRA) ---
+    ascendente = conf.get('orden_dir') == 'Ascendente'
+    
+    if conf.get('orden_por') == 'Valor (Métrica)':
+        # Para que las barras se ordenen bien aunque tengan pedacitos de colores,
+        # calculamos el total por cada etiqueta del eje X.
+        totales_x = df_grp.groupby(eje_x)['Valor'].sum().sort_values(ascending=ascendente).index.tolist()
+        # Forzamos el orden de las categorías en el DataFrame
+        df_grp[eje_x] = pd.Categorical(df_grp[eje_x], categories=totales_x, ordered=True)
+        df_grp = df_grp.sort_values(eje_x)
+    else:
+        # Orden alfabético/cronológico normal
+        df_grp = df_grp.sort_values(by=eje_x, ascending=ascendente)
+
     fig = None
     if conf['tipo'] in ['Barras', 'Barras Apiladas', 'Barras 100%']:
-        fig = px.bar(df_grp, x=eje_x, y='Valor', color=eje_color, template="plotly_white")
+        # text_auto=True coloca los valores automáticamente
+        fig = px.bar(df_grp, x=eje_x, y='Valor', color=eje_color, template="plotly_white", text_auto=True)
+        
         if conf['tipo'] == 'Barras Apiladas':
             fig.update_layout(barmode='stack')
         elif conf['tipo'] == 'Barras 100%':
@@ -104,11 +118,17 @@ def motor_visualizacion(df, conf):
         else:
             fig.update_layout(barmode='group')
             
+        # Obligar a Plotly a respetar el orden de categorías que calculamos arriba
+        fig.update_xaxes(categoryorder='array', categoryarray=df_grp[eje_x].unique())
+            
     elif conf['tipo'] == 'Líneas':
-        fig = px.line(df_grp, x=eje_x, y='Valor', color=eje_color, markers=True, template="plotly_white")
+        fig = px.line(df_grp, x=eje_x, y='Valor', color=eje_color, markers=True, template="plotly_white", text='Valor')
+        fig.update_traces(textposition="top center")
+        fig.update_xaxes(categoryorder='array', categoryarray=df_grp[eje_x].unique())
         
     elif conf['tipo'] == 'Dona':
         fig = px.pie(df_grp, names=eje_x, values='Valor', hole=0.4, template="plotly_white")
+        fig.update_traces(textinfo='label+value+percent', textposition='inside')
         
     if fig:
         fig.update_layout(title=conf['titulo'])
@@ -120,15 +140,12 @@ def mostrar_elemento_ui(elemento, conf):
         col_x = conf['vars_x'][0]
         if conf.get('totales', False) and col_x in elemento.columns:
             mask_total = elemento[col_x] == 'Total General'
-            
             st.dataframe(elemento[~mask_total], use_container_width=True, hide_index=True)
-            
             if mask_total.any():
                 st.caption("Totales Generales (Congelados)")
                 st.dataframe(elemento[mask_total], use_container_width=True, hide_index=True)
         else:
             st.dataframe(elemento, use_container_width=True, hide_index=True)
-            
     elif elemento is not None:
         st.plotly_chart(elemento, use_container_width=True)
 
@@ -139,17 +156,19 @@ def main():
     
     df = load_data_from_db(CONFIG["db_path"], CONFIG["table_name"])
     if df.empty:
-        st.warning("Base de datos vacía. Ejecute el manager para cargar datos.")
+        st.warning("Base de datos vacía o no encontrada.")
         st.stop()
 
     st.sidebar.header("Modo")
     modo_vista = st.sidebar.radio("Navegación", ["Constructor", "Visor de Reportes"], label_visibility="collapsed")
     st.sidebar.divider()
     
+    # --- FILTROS DINÁMICOS ---
     st.sidebar.header("Filtros Globales")
-    
     exclusiones_filtros = ['CASO', 'CASO.1', 'SUMARIO', 'RUTA / REFERNCIA EN U', 'NOTAS']
     columnas_filtrables = [c for c in df.columns if c not in exclusiones_filtros]
+    
+    # Aseguramos que los filtros por defecto definidos en config estén presentes
     filtros_por_defecto = [c for c in CONFIG.get("columnas_filtro", []) if c in columnas_filtrables]
     
     variables_a_filtrar = st.sidebar.multiselect(
@@ -159,11 +178,11 @@ def main():
     )
     
     df_filtrado = df.copy()
-    
     for col in variables_a_filtrar:
+        # Normalizamos la visualización de nulos para los filtros
         serie_str = df[col].astype(str).replace({"<NA>": "Sin Especificar", "nan": "Sin Especificar", "None": "Sin Especificar"})
         opciones = sorted(serie_str.unique())
-        seleccion = st.sidebar.multiselect(f"{col}:", opciones, default=[])
+        seleccion = st.sidebar.multiselect(f"{col}:", opciones, key=f"filter_{col}")
         
         if seleccion:
             serie_filtro = df_filtrado[col].astype(str).replace({"<NA>": "Sin Especificar", "nan": "Sin Especificar", "None": "Sin Especificar"})
@@ -174,18 +193,12 @@ def main():
     if modo_vista == "Constructor":
         st.markdown("### Diseñar Visualización")
         
-        exclusiones_dims = ['CASO', 'CASO.1', 'SUMARIO', 'RUTA / REFERNCIA EN U', 'NOTAS']
-        opciones_dims = [c for c in df.columns if c not in exclusiones_dims]
+        opciones_dims = [c for c in df.columns if c not in exclusiones_filtros]
         
         col1, col2, col3 = st.columns(3)
         vars_x = col1.multiselect("Filas (Eje Principal):", opciones_dims, default=[])
-        
-        opciones_dims_y = [c for c in opciones_dims if c not in vars_x]
-        vars_y = col2.multiselect("Columnas (Agrupación / Color):", opciones_dims_y, default=[])
-        
-        tipo_grafico = col3.selectbox("Formato Visual:", [
-            "Tabla Dinámica", "Barras", "Barras Apiladas", "Barras 100%", "Líneas", "Dona"
-        ])
+        vars_y = col2.multiselect("Columnas (Agrupación / Color):", [c for c in opciones_dims if c not in vars_x])
+        tipo_grafico = col3.selectbox("Formato Visual:", ["Tabla Dinámica", "Barras", "Barras Apiladas", "Barras 100%", "Líneas", "Dona"])
         
         col_m1, col_m2, col_m3 = st.columns(3)
         metrica = col_m1.selectbox("Métrica:", [CONFIG["metrica_default"]] + opciones_dims)
@@ -193,14 +206,21 @@ def main():
         titulo_custom = col_m3.text_input("Título:", "Análisis Cruzado")
 
         mostrar_totales = False
+        orden_por = "Categoría (Eje X)"
+        orden_dir = "Ascendente"
+
         if tipo_grafico == "Tabla Dinámica":
             mostrar_totales = st.checkbox("Incluir Totales en Filas y Columnas", value=False)
+        else:
+            col_ord1, col_ord2 = st.columns(2)
+            orden_por = col_ord1.selectbox("Ordenar por:", ["Categoría (Eje X)", "Valor (Métrica)"])
+            orden_dir = col_ord2.selectbox("Dirección:", ["Ascendente", "Descendente"])
 
         if vars_x:
             conf_actual = {
                 'titulo': titulo_custom, 'vars_x': vars_x, 'vars_y': vars_y,
                 'metrica': metrica, 'funcion': funcion, 'tipo': tipo_grafico,
-                'totales': mostrar_totales
+                'totales': mostrar_totales, 'orden_por': orden_por, 'orden_dir': orden_dir
             }
             
             st.markdown("#### Vista Previa")
@@ -213,7 +233,6 @@ def main():
 
     elif modo_vista == "Visor de Reportes":
         st.markdown("### Reporte Consolidado")
-        
         if not st.session_state['reportes_guardados']:
             st.info("No hay visualizaciones guardadas.")
         else:
@@ -223,7 +242,6 @@ def main():
                 st.rerun()
 
             elementos_para_exportar = []
-            
             for conf in st.session_state['reportes_guardados']:
                 st.markdown(f"#### {conf['titulo']}")
                 elemento = motor_visualizacion(df_filtrado, conf)
@@ -239,9 +257,8 @@ def main():
 
     st.divider()
     st.markdown("### Datos Base")
-    cols_existentes = [c for c in CONFIG["columnas_vista_detalle"] if c in df_filtrado.columns]
-    st.dataframe(df_filtrado[cols_existentes] if cols_existentes else df_filtrado, 
-                 use_container_width=True, hide_index=True, height=300)
+    cols_v = [c for c in CONFIG["columnas_vista_detalle"] if c in df_filtrado.columns]
+    st.dataframe(df_filtrado[cols_v] if cols_v else df_filtrado, use_container_width=True, hide_index=True, height=300)
 
 if __name__ == "__main__":
     main()
