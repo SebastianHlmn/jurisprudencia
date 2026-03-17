@@ -7,6 +7,7 @@ import plotly.express as px
 
 from config import CONFIG
 from export_utils import generar_word_dinamico
+import ui_ingesta_ia
 
 def inicializar_sesion():
     if 'reportes_guardados' not in st.session_state:
@@ -21,7 +22,6 @@ def load_data_from_db(db_path, table_name):
         df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
         conn.close()
         
-        # Corrección dinámica de tipos (SQLite -> Pandas)
         for col in df.columns:
             if pd.api.types.is_float_dtype(df[col]):
                 s_dropna = df[col].dropna()
@@ -49,7 +49,6 @@ def motor_visualizacion(df, conf):
             return txt[:-2]
         return txt
 
-    # 1. MODO TABLA DINÁMICA
     if conf['tipo'] == 'Tabla Dinámica':
         pivot = pd.pivot_table(df_calc, values=conf['metrica'], 
                                index=vars_x, columns=vars_y if vars_y else None, 
@@ -68,16 +67,13 @@ def motor_visualizacion(df, conf):
                     pivot[col] = pivot[col].astype('Int64')
         return pivot
 
-    # 2. MODO GRÁFICOS
     group_vars = vars_x + vars_y
     df_grp = df_calc.groupby(group_vars, dropna=False)[conf['metrica']].agg(funcion_agg).reset_index()
     df_grp = df_grp.rename(columns={conf['metrica']: 'Valor'})
     
-    # Normalizar etiquetas de nulos
     for col in group_vars:
         df_grp[col] = df_grp[col].astype(str).replace({"<NA>": "Sin Especificar", "nan": "Sin Especificar", "None": "Sin Especificar"})
     
-    # Crear etiqueta de eje X (Anidada o Simple)
     eje_x = " - ".join(vars_x)
     if len(vars_x) > 1:
         df_grp[eje_x] = df_grp[vars_x].agg(' - '.join, axis=1)
@@ -91,25 +87,18 @@ def motor_visualizacion(df, conf):
         else:
             df_grp[eje_color] = df_grp[vars_y[0]]
 
-    # --- LÓGICA DE ORDENAMIENTO ROBUSTA (ORDENAR POR TOTAL DE BARRA) ---
     ascendente = conf.get('orden_dir') == 'Ascendente'
     
     if conf.get('orden_por') == 'Valor (Métrica)':
-        # Para que las barras se ordenen bien aunque tengan pedacitos de colores,
-        # calculamos el total por cada etiqueta del eje X.
         totales_x = df_grp.groupby(eje_x)['Valor'].sum().sort_values(ascending=ascendente).index.tolist()
-        # Forzamos el orden de las categorías en el DataFrame
         df_grp[eje_x] = pd.Categorical(df_grp[eje_x], categories=totales_x, ordered=True)
         df_grp = df_grp.sort_values(eje_x)
     else:
-        # Orden alfabético/cronológico normal
         df_grp = df_grp.sort_values(by=eje_x, ascending=ascendente)
 
     fig = None
     if conf['tipo'] in ['Barras', 'Barras Apiladas', 'Barras 100%']:
-        # text_auto=True coloca los valores automáticamente
         fig = px.bar(df_grp, x=eje_x, y='Valor', color=eje_color, template="plotly_white", text_auto=True)
-        
         if conf['tipo'] == 'Barras Apiladas':
             fig.update_layout(barmode='stack')
         elif conf['tipo'] == 'Barras 100%':
@@ -117,8 +106,6 @@ def motor_visualizacion(df, conf):
             fig.update_yaxes(title_text="Porcentaje (%)")
         else:
             fig.update_layout(barmode='group')
-            
-        # Obligar a Plotly a respetar el orden de categorías que calculamos arriba
         fig.update_xaxes(categoryorder='array', categoryarray=df_grp[eje_x].unique())
             
     elif conf['tipo'] == 'Líneas':
@@ -152,6 +139,16 @@ def mostrar_elemento_ui(elemento, conf):
 def main():
     st.set_page_config(page_title=CONFIG["app_title"], layout="wide")
     inicializar_sesion()
+    
+    with st.sidebar:
+        st.header("Navegación")
+        seccion_activa = st.radio("Sección", ["Tablero BI (Constructor)", "Visor de Reportes", "Ingesta con IA"], label_visibility="collapsed")
+        st.divider()
+        
+    if seccion_activa == "Ingesta con IA":
+        ui_ingesta_ia.render_ui()
+        return 
+
     st.title(CONFIG["app_title"])
     
     df = load_data_from_db(CONFIG["db_path"], CONFIG["table_name"])
@@ -159,16 +156,10 @@ def main():
         st.warning("Base de datos vacía o no encontrada.")
         st.stop()
 
-    st.sidebar.header("Modo")
-    modo_vista = st.sidebar.radio("Navegación", ["Constructor", "Visor de Reportes"], label_visibility="collapsed")
-    st.sidebar.divider()
-    
-    # --- FILTROS DINÁMICOS ---
     st.sidebar.header("Filtros Globales")
     exclusiones_filtros = ['CASO', 'CASO.1', 'SUMARIO', 'RUTA / REFERNCIA EN U', 'NOTAS']
     columnas_filtrables = [c for c in df.columns if c not in exclusiones_filtros]
     
-    # Aseguramos que los filtros por defecto definidos en config estén presentes
     filtros_por_defecto = [c for c in CONFIG.get("columnas_filtro", []) if c in columnas_filtrables]
     
     variables_a_filtrar = st.sidebar.multiselect(
@@ -179,7 +170,6 @@ def main():
     
     df_filtrado = df.copy()
     for col in variables_a_filtrar:
-        # Normalizamos la visualización de nulos para los filtros
         serie_str = df[col].astype(str).replace({"<NA>": "Sin Especificar", "nan": "Sin Especificar", "None": "Sin Especificar"})
         opciones = sorted(serie_str.unique())
         seleccion = st.sidebar.multiselect(f"{col}:", opciones, key=f"filter_{col}")
@@ -190,7 +180,7 @@ def main():
 
     st.sidebar.markdown(f"**Registros analizados:** {len(df_filtrado)}")
 
-    if modo_vista == "Constructor":
+    if seccion_activa == "Tablero BI (Constructor)":
         st.markdown("### Diseñar Visualización")
         
         opciones_dims = [c for c in df.columns if c not in exclusiones_filtros]
@@ -231,7 +221,7 @@ def main():
                 st.session_state['reportes_guardados'].append(conf_actual)
                 st.success("Visualización guardada.")
 
-    elif modo_vista == "Visor de Reportes":
+    elif seccion_activa == "Visor de Reportes":
         st.markdown("### Reporte Consolidado")
         if not st.session_state['reportes_guardados']:
             st.info("No hay visualizaciones guardadas.")
@@ -262,4 +252,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# app.py
