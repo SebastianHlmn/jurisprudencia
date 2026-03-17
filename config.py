@@ -6,16 +6,16 @@ CONFIG = {
     "db_path": os.getenv("DB_PATH", "jurisprudencia.db"),
     "table_name": os.getenv("DB_TABLE", "resoluciones"),
     
-    # Nomenclaturas y Filtros
-    "columnas_filtro": ["Distrito", "JUEZ/A", "Temas", "ORGANO JUDICIAL"],
+    # Nomenclaturas y Filtros ajustados al nuevo CSV
+    "columnas_filtro": ["Distrito", "JUEZ/A", "Temas_se", "ORGANO JUDICIAL", "ETAPA PROCESAL"],
     "columna_fecha": "FECHA",
-    "columna_año": "AÑO",
-    "columnas_vista_detalle": ['FECHA', 'Distrito', 'ORGANO JUDICIAL', 'JUEZ/A', 'Temas', 'CASO', 'SUMARIO'],
+    "columna_año": "Año",
+    "columnas_vista_detalle": ['IdFallo', 'FECHA', 'Distrito', 'ORGANO JUDICIAL', 'JUEZ/A', 'Temas_se', 'CASO', 'SUMARIO'],
     
-    # Textos de Interfaz
-    "app_title": "⚖️ Tablero Dinámico de Jurisprudencia (MPF)",
+    # Textos de Interfaz (Simples y directos)
+    "app_title": "Tablero de Jurisprudencia",
     
-    # Ingesta (Lo usaremos luego para manager.py)
+    # Ingesta
     "prefijo_ingesta": "Relevamiento"
 }
 # config.py

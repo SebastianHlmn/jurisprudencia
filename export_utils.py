@@ -3,31 +3,29 @@ import io
 from docx import Document
 from docx.shared import Inches
 
-def generar_word_dinamico(df_data, fig_year, fig_temas, config):
+def generar_word_dinamico(df_data, reportes_graficos, config):
     """
-    Genera un documento Word institucional basado en los datos y gráficos filtrados.
+    Genera un informe en Word con los datos filtrados y los gráficos creados por el usuario.
     """
     doc = Document()
     doc.add_heading(config["app_title"], 0)
     
-    # --- Resumen Estadístico ---
-    doc.add_heading('Resumen Estadístico', level=1)
-    doc.add_paragraph(f"Total de Registros: {len(df_data)}")
+    # --- Resumen de Datos ---
+    doc.add_heading('Resumen de Datos', level=1)
+    doc.add_paragraph(f"Total de Registros en esta vista: {len(df_data)}")
     
     for col in config["columnas_filtro"]:
         if col in df_data.columns:
             doc.add_paragraph(f"{col} Distintos: {df_data[col].nunique()}")
     
-    # --- Gráficos ---
-    if fig_year is not None:
-        doc.add_heading('Evolución Temporal', level=1)
-        img_bytes = fig_year.to_image(format="png")
-        doc.add_picture(io.BytesIO(img_bytes), width=Inches(6))
-        
-    if fig_temas is not None:
-        doc.add_heading('Frecuencias Principales', level=1)
-        img_bytes = fig_temas.to_image(format="png")
-        doc.add_picture(io.BytesIO(img_bytes), width=Inches(6))
+    # --- Visualizaciones Dinámicas ---
+    if reportes_graficos:
+        doc.add_heading('Visualizaciones', level=1)
+        for titulo, fig in reportes_graficos:
+            doc.add_heading(titulo, level=2)
+            img_bytes = fig.to_image(format="png")
+            doc.add_picture(io.BytesIO(img_bytes), width=Inches(6))
+            doc.add_paragraph() # Espacio entre gráficos
         
     # --- Retorno en memoria ---
     buffer = io.BytesIO()

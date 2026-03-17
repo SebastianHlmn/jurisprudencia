@@ -5,15 +5,15 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
-# Importamos nuestros propios módulos modulares
 from config import CONFIG
 from export_utils import generar_word_dinamico
 
 def inicializar_sesion():
     if 'filtros_activos' not in st.session_state:
         st.session_state['filtros_activos'] = {}
-    if 'modo_vista' not in st.session_state:
-        st.session_state['modo_vista'] = 'dashboard'
+    if 'reportes' not in st.session_state:
+        # Guardará tuplas de (titulo, objeto_figura)
+        st.session_state['reportes'] = [] 
 
 @st.cache_data(ttl=300)
 def load_data_from_db(db_path, table_name):
@@ -31,7 +31,7 @@ def load_data_from_db(db_path, table_name):
         return pd.DataFrame()
 
 def main():
-    st.set_page_config(page_title=CONFIG["app_title"], page_icon="⚖️", layout="wide")
+    st.set_page_config(page_title=CONFIG["app_title"], layout="wide")
     inicializar_sesion()
     
     st.title(CONFIG["app_title"])
@@ -39,94 +39,93 @@ def main():
     df = load_data_from_db(CONFIG["db_path"], CONFIG["table_name"])
     
     if df.empty:
-        st.warning("No hay datos disponibles. Verificá que el repositorio haya sido inicializado.")
+        st.warning("No hay datos. Por favor, ejecute manager.py para cargar la base.")
         st.stop()
 
-    # --- BARRA LATERAL DEDICADA A FILTROS DINÁMICOS ---
-    st.sidebar.header("Filtros de Búsqueda")
+    # --- FILTROS ---
+    st.sidebar.header("Filtros")
     df_filtrado = df.copy()
     
     for col in CONFIG["columnas_filtro"]:
         if col in df.columns:
             opciones = sorted(df[col].dropna().astype(str).unique())
-            seleccion = st.sidebar.multiselect(f"Filtrar por {col}:", opciones, default=[])
+            seleccion = st.sidebar.multiselect(f"{col}:", opciones, default=[])
             if seleccion:
                 df_filtrado = df_filtrado[df_filtrado[col].isin(seleccion)]
-                st.session_state['filtros_activos'][col] = seleccion
 
-    # --- KPIs DINÁMICOS ---
-    st.markdown("### Resumen Estadístico")
-    kpi_cols = st.columns(len(CONFIG["columnas_filtro"]) + 1)
-    kpi_cols[0].metric("Total Resoluciones", len(df_filtrado))
-    
-    for i, col in enumerate(CONFIG["columnas_filtro"]):
-        if col in df_filtrado.columns:
-            kpi_cols[i+1].metric(f"{col}", df_filtrado[col].nunique())
-
+    st.markdown(f"**Registros filtrados:** {len(df_filtrado)}")
     st.divider()
 
-    # --- GRÁFICOS ---
-    col_graf1, col_graf2 = st.columns(2)
-    fig_year = None
-    fig_temas = None
-
-    with col_graf1:
-        st.markdown("#### Evolución Temporal")
-        col_año = CONFIG["columna_año"]
-        if col_año in df_filtrado.columns:
-            df_year = df_filtrado[col_año].value_counts().reset_index()
-            df_year.columns = [col_año, 'Cantidad']
-            df_year = df_year.dropna().sort_values(col_año)
-            
-            if not df_year.empty:
-                fig_year = px.line(df_year, x=col_año, y='Cantidad', markers=True, template="plotly_white")
-                fig_year.update_xaxes(dtick=1)
-                st.plotly_chart(fig_year, use_container_width=True)
-            else:
-                st.info("Sin datos temporales.")
-
-    with col_graf2:
-        st.markdown("#### Distribución Principal")
-        col_graf_bar = CONFIG["columnas_filtro"][2] if len(CONFIG["columnas_filtro"]) > 2 else CONFIG["columnas_filtro"][0]
+    # --- CONSTRUCTOR DE REPORTES (Tipo Tabla Dinámica) ---
+    st.markdown("### Constructor de Visualizaciones")
+    
+    col_var, col_tipo, col_btn = st.columns([2, 2, 1])
+    
+    # Excluir columnas de texto largo o identificadores únicos de las opciones de agrupación
+    exclusiones = ['IdFallo', 'CASO', 'CASO.1', 'SUMARIO', 'RUTA / REFERNCIA EN U', 'NOTAS']
+    opciones_agrupacion = [c for c in df_filtrado.columns if c not in exclusiones]
+    
+    variable_x = col_var.selectbox("Agrupar por variable:", opciones_agrupacion)
+    tipo_grafico = col_tipo.selectbox("Formato visual:", ["Barras", "Líneas", "Dona"])
+    
+    if col_btn.button("Agregar a Reporte"):
+        # Preparar datos para el gráfico
+        df_grp = df_filtrado[variable_x].value_counts().reset_index()
+        df_grp.columns = [variable_x, 'Cantidad']
+        df_grp = df_grp.dropna()
         
-        if col_graf_bar in df_filtrado.columns:
-            df_bar = df_filtrado[df_filtrado[col_graf_bar] != "Sin Especificar"][col_graf_bar].value_counts().head(10).reset_index()
-            df_bar.columns = [col_graf_bar, 'Cantidad']
+        titulo_grafico = f"Distribución por {variable_x}"
+        
+        # Generar figura según elección
+        if tipo_grafico == "Barras":
+            fig = px.bar(df_grp.sort_values('Cantidad', ascending=True), 
+                         x='Cantidad', y=variable_x, orientation='h', 
+                         title=titulo_grafico, template="plotly_white")
+        elif tipo_grafico == "Líneas":
+            df_grp_sorted = df_grp.sort_values(variable_x) # Mejor para fechas/años
+            fig = px.line(df_grp_sorted, x=variable_x, y='Cantidad', markers=True, 
+                          title=titulo_grafico, template="plotly_white")
+        elif tipo_grafico == "Dona":
+            fig = px.pie(df_grp, names=variable_x, values='Cantidad', hole=0.4, 
+                         title=titulo_grafico, template="plotly_white")
             
-            if not df_bar.empty:
-                fig_temas = px.bar(df_bar.sort_values('Cantidad', ascending=True), 
-                                   x='Cantidad', y=col_graf_bar, orientation='h', template="plotly_white")
-                st.plotly_chart(fig_temas, use_container_width=True)
+        st.session_state['reportes'].append((titulo_grafico, fig))
 
+    # --- MOSTRAR REPORTES GUARDADOS ---
+    if st.session_state['reportes']:
+        st.markdown("### Reporte Actual")
+        if st.button("Limpiar Reporte"):
+            st.session_state['reportes'] = []
+            st.rerun()
+            
+        cols_grid = st.columns(2)
+        for i, (titulo, fig) in enumerate(st.session_state['reportes']):
+            cols_grid[i % 2].plotly_chart(fig, use_container_width=True)
+            
     st.divider()
 
     # --- EXPORTACIÓN ---
-    st.markdown("### 📄 Exportación Institucional")
-    if st.button("Generar Informe en Word"):
-        with st.spinner("Compilando reporte dinámico..."):
-            buffer = generar_word_dinamico(df_filtrado, fig_year, fig_temas, CONFIG)
+    st.markdown("### Generar Informe")
+    if st.button("Descargar Informe en Word"):
+        with st.spinner("Generando documento..."):
+            buffer = generar_word_dinamico(df_filtrado, st.session_state['reportes'], CONFIG)
             st.download_button(
-                label="⬇️ Descargar Archivo Word",
+                label="⬇️ Descargar Archivo",
                 data=buffer,
-                file_name="Reporte_Jurisprudencia_Agil.docx",
+                file_name="Informe_Jurisprudencia.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
 
     st.divider()
 
-    # --- VISTA DETALLADA DINÁMICA ---
-    st.markdown("### Base de Resoluciones")
+    # --- VISTA DE DATOS ---
+    st.markdown("### Datos")
     columnas_existentes = [col for col in CONFIG["columnas_vista_detalle"] if col in df_filtrado.columns]
     
     if columnas_existentes:
-        st.dataframe(
-            df_filtrado[columnas_existentes],
-            use_container_width=True,
-            hide_index=True,
-            height=400
-        )
+        st.dataframe(df_filtrado[columnas_existentes], use_container_width=True, hide_index=True)
     else:
-        st.dataframe(df_filtrado, use_container_width=True, height=400)
+        st.dataframe(df_filtrado, use_container_width=True)
 
 if __name__ == "__main__":
     main()
