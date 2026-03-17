@@ -41,20 +41,22 @@ def motor_visualizacion(df, conf):
                                index=vars_x, columns=vars_y if vars_y else None, 
                                aggfunc=funcion_agg, dropna=False)
         pivot = pivot.fillna(0)
-        return pivot.reset_index()
+        pivot = pivot.reset_index()
+        
+        # --- CORRECCIÓN PYARROW (PANTALLA BLANCA) ---
+        # Convertimos forzosamente todos los nombres de columnas a string para evitar
+        # que Streamlit colapse al intentar renderizar columnas numéricas (ej: años).
+        pivot.columns = [str(col) if not isinstance(col, tuple) else " - ".join(map(str, col)) for col in pivot.columns]
+        
+        return pivot
 
     # 2. MODO GRÁFICOS
     group_vars = vars_x + vars_y
-    # Agrupamos manteniendo los nulos para no perder data
     df_grp = df_calc.groupby(group_vars, dropna=False)[conf['metrica']].agg(funcion_agg).reset_index()
     df_grp = df_grp.rename(columns={conf['metrica']: 'Valor'})
     
-    # --- ORDENAMIENTO NUMÉRICO ESTRUCTURAL ---
-    # Ordenamos antes de convertir a texto. Los números se ordenan bien, los nulos van al final.
     df_grp = df_grp.sort_values(by=group_vars)
 
-    # --- FORMATEO VISUAL PARA PLOTLY ---
-    # Ahora sí pasamos a string y tapamos los nulos con una etiqueta para forzar el eje categórico
     for col in group_vars:
         df_grp[col] = df_grp[col].fillna("Sin Especificar").astype(str)
     
@@ -72,7 +74,6 @@ def motor_visualizacion(df, conf):
             df_grp[eje_color] = df_grp[vars_y[0]]
 
     fig = None
-    # Ya no hace falta re-ordenar el dataframe en las llamadas a px porque ya viene ordenado de arriba
     if conf['tipo'] in ['Barras', 'Barras Apiladas', 'Barras 100%']:
         fig = px.bar(df_grp, x=eje_x, y='Valor', color=eje_color, template="plotly_white")
         if conf['tipo'] == 'Barras Apiladas':
@@ -105,14 +106,14 @@ def main():
         st.stop()
 
     st.sidebar.header("Modo")
-    modo_vista = st.sidebar.radio("", ["Constructor", "Visor de Reportes"])
+    # Corrección del warning de accesibilidad en la consola ocultando explícitamente el label
+    modo_vista = st.sidebar.radio("Navegación", ["Constructor", "Visor de Reportes"], label_visibility="collapsed")
     st.sidebar.divider()
     
     st.sidebar.header("Filtros Globales")
     df_filtrado = df.copy()
     for col in CONFIG["columnas_filtro"]:
         if col in df.columns:
-            # Rellenamos nulos temporalmente solo para armar la lista de opciones y buscar coincidencias
             opciones = sorted(df[col].fillna("Sin Especificar").astype(str).unique())
             seleccion = st.sidebar.multiselect(f"{col}:", opciones, default=[])
             if seleccion:
