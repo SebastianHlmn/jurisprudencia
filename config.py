@@ -10,7 +10,6 @@ CONFIG = {
     "columna_año": "Año",
     "columnas_vista_detalle": ['IdFallo', 'FECHA', 'Distrito', 'ORGANO JUDICIAL', 'JUEZ/A', 'Temas_se', 'CASO', 'SUMARIO'],
     
-    # Configuración de agregación por defecto
     "metrica_default": "IdFallo",
     
     "app_title": "Tablero de Jurisprudencia",

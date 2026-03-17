@@ -21,24 +21,29 @@ def generar_word_dinamico(df_data, elementos_renderizados, config):
             doc.add_heading(titulo, level=2)
             
             if isinstance(elemento, pd.DataFrame):
-                # Es una tabla anidada, la dibujamos en Word
-                t = doc.add_table(rows=1, cols=len(elemento.columns))
+                # Escribir la tabla dinámica en Word
+                elemento_str = elemento.astype(str)
+                t = doc.add_table(rows=1, cols=len(elemento_str.columns))
                 t.style = 'Table Grid'
-                for i, col in enumerate(elemento.columns):
-                    t.cell(0, i).text = str(col)
-                for _, row in elemento.iterrows():
+                
+                # Encabezados
+                for i, col in enumerate(elemento_str.columns):
+                    t.cell(0, i).text = col
+                    
+                # Filas
+                for _, row in elemento_str.iterrows():
                     row_cells = t.add_row().cells
                     for i, val in enumerate(row):
-                        row_cells[i].text = str(val)
+                        row_cells[i].text = val
             elif elemento is not None:
-                # Es un gráfico Plotly
+                # Escribir el Gráfico
                 try:
                     img_bytes = elemento.to_image(format="png")
                     doc.add_picture(io.BytesIO(img_bytes), width=Inches(6))
                 except Exception as e:
                     doc.add_paragraph(f"[No se pudo exportar el gráfico: {e}]")
             
-            doc.add_paragraph() # Espaciador
+            doc.add_paragraph()
         
     buffer = io.BytesIO()
     doc.save(buffer)

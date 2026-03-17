@@ -10,7 +10,6 @@ from export_utils import generar_word_dinamico
 
 def inicializar_sesion():
     if 'reportes_guardados' not in st.session_state:
-        # Guardaremos diccionarios de configuración, no figuras estáticas
         st.session_state['reportes_guardados'] = []
 
 @st.cache_data(ttl=300)
@@ -28,43 +27,61 @@ def load_data_from_db(db_path, table_name):
 
 def motor_visualizacion(df, conf):
     """
-    Toma un DataFrame y una configuración, calcula las agregaciones jerárquicas 
-    y devuelve una figura de Plotly o un DataFrame (si es tipo Tabla).
+    Motor multidimensional: Procesa dimensiones en X (Filas), Y (Columnas),
+    y calcula la métrica según la función solicitada.
     """
-    vars_agrupacion = conf['vars_x'].copy()
-    if conf['var_color'] and conf['var_color'] not in vars_agrupacion:
-        vars_agrupacion.append(conf['var_color'])
-        
-    if not vars_agrupacion:
+    vars_x = conf.get('vars_x', [])
+    vars_y = conf.get('vars_y', [])
+    
+    if not vars_x:
         return None
         
-    # Lógica de cálculo (Count Distinct o Count)
-    if conf['funcion'] == 'Conteo Único':
-        df_grp = df.groupby(vars_agrupacion, dropna=False)[conf['metrica']].nunique().reset_index()
-    else:
-        df_grp = df.groupby(vars_agrupacion, dropna=False)[conf['metrica']].count().reset_index()
-        
+    df_clean = df.fillna("Sin Dato")
+    funcion_agg = pd.Series.nunique if conf['funcion'] == 'Conteo Único' else 'count'
+    
+    # 1. MODO TABLA DINÁMICA
+    if conf['tipo'] == 'Tabla Dinámica':
+        if vars_y:
+            pivot = pd.pivot_table(df_clean, values=conf['metrica'], 
+                                   index=vars_x, columns=vars_y, 
+                                   aggfunc=funcion_agg, fill_value=0)
+        else:
+            pivot = pd.pivot_table(df_clean, values=conf['metrica'], 
+                                   index=vars_x, 
+                                   aggfunc=funcion_agg, fill_value=0)
+        return pivot.reset_index()
+
+    # 2. MODO GRÁFICOS
+    group_vars = vars_x + vars_y
+    df_grp = df_clean.groupby(group_vars)[conf['metrica']].agg(funcion_agg).reset_index()
     df_grp = df_grp.rename(columns={conf['metrica']: 'Valor'})
     
-    if conf['tipo'] == 'Tabla':
-        return df_grp
+    # Concatenar jerarquías para Plotly
+    eje_x = " - ".join(vars_x)
+    if len(vars_x) > 1:
+        df_grp[eje_x] = df_grp[vars_x].astype(str).agg(' - '.join, axis=1)
         
-    # Preparar eje X anidado para Plotly
-    eje_x = conf['vars_x'][0]
-    if len(conf['vars_x']) > 1:
-        eje_x = " - ".join(conf['vars_x'])
-        df_grp[eje_x] = df_grp[conf['vars_x']].astype(str).agg(' - '.join, axis=1)
+    eje_color = " - ".join(vars_y) if vars_y else None
+    if vars_y and len(vars_y) > 1:
+        df_grp[eje_color] = df_grp[vars_y].astype(str).agg(' - '.join, axis=1)
 
-    color_arg = conf['var_color'] if conf['var_color'] else None
-
-    # Renderizado
     fig = None
-    if conf['tipo'] == 'Barras':
-        fig = px.bar(df_grp.sort_values('Valor', ascending=True), 
-                     x='Valor', y=eje_x, color=color_arg, orientation='h', template="plotly_white")
+    
+    if conf['tipo'] in ['Barras', 'Barras Apiladas', 'Barras 100%']:
+        # Usamos barras verticales (x=eje_x, y=Valor) para mejor lectura de series temporales/categóricas largas
+        fig = px.bar(df_grp, x=eje_x, y='Valor', color=eje_color, template="plotly_white")
+        
+        if conf['tipo'] == 'Barras Apiladas':
+            fig.update_layout(barmode='stack')
+        elif conf['tipo'] == 'Barras 100%':
+            fig.update_layout(barmode='stack', barnorm='percent')
+            fig.update_yaxes(title_text="Porcentaje (%)")
+        else:
+            fig.update_layout(barmode='group')
+            
     elif conf['tipo'] == 'Líneas':
-        fig = px.line(df_grp.sort_values(eje_x), 
-                      x=eje_x, y='Valor', color=color_arg, markers=True, template="plotly_white")
+        fig = px.line(df_grp.sort_values(eje_x), x=eje_x, y='Valor', color=eje_color, markers=True, template="plotly_white")
+        
     elif conf['tipo'] == 'Dona':
         fig = px.pie(df_grp, names=eje_x, values='Valor', hole=0.4, template="plotly_white")
         
@@ -80,11 +97,11 @@ def main():
     
     df = load_data_from_db(CONFIG["db_path"], CONFIG["table_name"])
     if df.empty:
-        st.warning("Base de datos vacía o no encontrada.")
+        st.warning("Base de datos vacía. Ejecute el manager para cargar datos.")
         st.stop()
 
     # --- PANEL LATERAL ---
-    st.sidebar.header("Modo de Trabajo")
+    st.sidebar.header("Modo")
     modo_vista = st.sidebar.radio("", ["Constructor", "Visor de Reportes"])
     st.sidebar.divider()
     
@@ -97,8 +114,7 @@ def main():
             if seleccion:
                 df_filtrado = df_filtrado[df_filtrado[col].isin(seleccion)]
 
-    st.markdown(f"**Volumen de datos actual:** {len(df_filtrado)} registros filtrados.")
-    st.divider()
+    st.sidebar.markdown(f"**Registros:** {len(df_filtrado)}")
 
     # --- MODO CONSTRUCTOR ---
     if modo_vista == "Constructor":
@@ -108,18 +124,20 @@ def main():
         opciones_dims = [c for c in df.columns if c not in exclusiones]
         
         col1, col2, col3 = st.columns(3)
-        vars_x = col1.multiselect("Jerarquía (Filas / Eje Principal):", opciones_dims, default=[])
-        var_color = col2.selectbox("Subcategoría (Columnas / Color):", ["Ninguna"] + opciones_dims)
-        var_color = None if var_color == "Ninguna" else var_color
+        vars_x = col1.multiselect("Filas (Eje Principal):", opciones_dims, default=[])
+        vars_y = col2.multiselect("Columnas (Agrupación / Color):", opciones_dims, default=[])
+        tipo_grafico = col3.selectbox("Formato Visual:", [
+            "Tabla Dinámica", "Barras", "Barras Apiladas", "Barras 100%", "Líneas", "Dona"
+        ])
         
-        metrica = col3.selectbox("Métrica a evaluar:", [CONFIG["metrica_default"]] + opciones_dims)
-        funcion = col1.selectbox("Operación:", ["Conteo Único", "Conteo Simple"])
-        tipo_grafico = col2.selectbox("Formato:", ["Barras", "Líneas", "Dona", "Tabla"])
-        titulo_custom = col3.text_input("Título de la visualización:", "Análisis de Datos")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        metrica = col_m1.selectbox("Métrica:", [CONFIG["metrica_default"]] + opciones_dims)
+        funcion = col_m2.selectbox("Operación:", ["Conteo Único", "Conteo Simple"])
+        titulo_custom = col_m3.text_input("Título:", "Análisis Cruzado")
 
         if vars_x:
             conf_actual = {
-                'titulo': titulo_custom, 'vars_x': vars_x, 'var_color': var_color,
+                'titulo': titulo_custom, 'vars_x': vars_x, 'vars_y': vars_y,
                 'metrica': metrica, 'funcion': funcion, 'tipo': tipo_grafico
             }
             
@@ -133,14 +151,14 @@ def main():
                 
             if st.button("Guardar en el Visor de Reportes"):
                 st.session_state['reportes_guardados'].append(conf_actual)
-                st.success("Visualización guardada. Cambie al Visor para ver el reporte consolidado.")
+                st.success("Visualización guardada.")
 
     # --- MODO VISOR DE REPORTES ---
     elif modo_vista == "Visor de Reportes":
         st.markdown("### Reporte Consolidado")
         
         if not st.session_state['reportes_guardados']:
-            st.info("No hay visualizaciones guardadas. Vaya al Constructor para crearlas.")
+            st.info("No hay visualizaciones guardadas.")
         else:
             col_limpiar, col_export = st.columns([1, 4])
             if col_limpiar.button("Limpiar Reporte"):
@@ -148,13 +166,10 @@ def main():
                 st.rerun()
 
             elementos_para_exportar = []
-            cols_grid = st.columns(2)
             
-            # Recalcular y dibujar cada configuración con los datos filtrados actuales
-            for i, conf in enumerate(st.session_state['reportes_guardados']):
+            for conf in st.session_state['reportes_guardados']:
                 st.markdown(f"#### {conf['titulo']}")
                 elemento = motor_visualizacion(df_filtrado, conf)
-                
                 elementos_para_exportar.append((conf['titulo'], elemento))
                 
                 if isinstance(elemento, pd.DataFrame):
