@@ -4,6 +4,13 @@ import pandas as pd
 from docx import Document
 from docx.shared import Inches
 
+def limpiar_decimales_cero(texto):
+    """Elimina el .0 de los strings que representan números enteros perfectos."""
+    txt = str(texto)
+    if txt.endswith('.0') and txt[:-2].replace('-', '').isdigit():
+        return txt[:-2]
+    return txt
+
 def generar_word_dinamico(df_data, elementos_renderizados, config):
     doc = Document()
     doc.add_heading(config["app_title"], 0)
@@ -21,22 +28,20 @@ def generar_word_dinamico(df_data, elementos_renderizados, config):
             doc.add_heading(titulo, level=2)
             
             if isinstance(elemento, pd.DataFrame):
-                # Escribir la tabla dinámica en Word
                 elemento_str = elemento.astype(str)
                 t = doc.add_table(rows=1, cols=len(elemento_str.columns))
                 t.style = 'Table Grid'
                 
-                # Encabezados
-                for i, col in enumerate(elemento_str.columns):
-                    t.cell(0, i).text = col
+                # Escribir Encabezados limpios
+                for i, col in enumerate(elemento.columns):
+                    t.cell(0, i).text = limpiar_decimales_cero(col)
                     
-                # Filas
+                # Escribir Filas limpias
                 for _, row in elemento_str.iterrows():
                     row_cells = t.add_row().cells
                     for i, val in enumerate(row):
-                        row_cells[i].text = val
+                        row_cells[i].text = limpiar_decimales_cero(val)
             elif elemento is not None:
-                # Escribir el Gráfico
                 try:
                     img_bytes = elemento.to_image(format="png")
                     doc.add_picture(io.BytesIO(img_bytes), width=Inches(6))
