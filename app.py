@@ -26,51 +26,55 @@ def load_data_from_db(db_path, table_name):
         return pd.DataFrame()
 
 def motor_visualizacion(df, conf):
-    """
-    Motor multidimensional: Procesa dimensiones en X (Filas), Y (Columnas),
-    y calcula la métrica según la función solicitada.
-    """
     vars_x = conf.get('vars_x', [])
     vars_y = conf.get('vars_y', [])
     
     if not vars_x:
         return None
         
-    df_clean = df.fillna("Sin Dato")
+    df_calc = df.copy()
     funcion_agg = pd.Series.nunique if conf['funcion'] == 'Conteo Único' else 'count'
     
     # 1. MODO TABLA DINÁMICA
     if conf['tipo'] == 'Tabla Dinámica':
-        if vars_y:
-            pivot = pd.pivot_table(df_clean, values=conf['metrica'], 
-                                   index=vars_x, columns=vars_y, 
-                                   aggfunc=funcion_agg, fill_value=0)
-        else:
-            pivot = pd.pivot_table(df_clean, values=conf['metrica'], 
-                                   index=vars_x, 
-                                   aggfunc=funcion_agg, fill_value=0)
+        pivot = pd.pivot_table(df_calc, values=conf['metrica'], 
+                               index=vars_x, columns=vars_y if vars_y else None, 
+                               aggfunc=funcion_agg, dropna=False)
+        pivot = pivot.fillna(0)
         return pivot.reset_index()
 
     # 2. MODO GRÁFICOS
     group_vars = vars_x + vars_y
-    df_grp = df_clean.groupby(group_vars)[conf['metrica']].agg(funcion_agg).reset_index()
+    # Agrupamos manteniendo los nulos para no perder data
+    df_grp = df_calc.groupby(group_vars, dropna=False)[conf['metrica']].agg(funcion_agg).reset_index()
     df_grp = df_grp.rename(columns={conf['metrica']: 'Valor'})
     
-    # Concatenar jerarquías para Plotly
+    # --- ORDENAMIENTO NUMÉRICO ESTRUCTURAL ---
+    # Ordenamos antes de convertir a texto. Los números se ordenan bien, los nulos van al final.
+    df_grp = df_grp.sort_values(by=group_vars)
+
+    # --- FORMATEO VISUAL PARA PLOTLY ---
+    # Ahora sí pasamos a string y tapamos los nulos con una etiqueta para forzar el eje categórico
+    for col in group_vars:
+        df_grp[col] = df_grp[col].fillna("Sin Especificar").astype(str)
+    
     eje_x = " - ".join(vars_x)
     if len(vars_x) > 1:
-        df_grp[eje_x] = df_grp[vars_x].astype(str).agg(' - '.join, axis=1)
+        df_grp[eje_x] = df_grp[vars_x].agg(' - '.join, axis=1)
+    else:
+        df_grp[eje_x] = df_grp[vars_x[0]]
         
     eje_color = " - ".join(vars_y) if vars_y else None
-    if vars_y and len(vars_y) > 1:
-        df_grp[eje_color] = df_grp[vars_y].astype(str).agg(' - '.join, axis=1)
+    if vars_y:
+        if len(vars_y) > 1:
+            df_grp[eje_color] = df_grp[vars_y].agg(' - '.join, axis=1)
+        else:
+            df_grp[eje_color] = df_grp[vars_y[0]]
 
     fig = None
-    
+    # Ya no hace falta re-ordenar el dataframe en las llamadas a px porque ya viene ordenado de arriba
     if conf['tipo'] in ['Barras', 'Barras Apiladas', 'Barras 100%']:
-        # Usamos barras verticales (x=eje_x, y=Valor) para mejor lectura de series temporales/categóricas largas
         fig = px.bar(df_grp, x=eje_x, y='Valor', color=eje_color, template="plotly_white")
-        
         if conf['tipo'] == 'Barras Apiladas':
             fig.update_layout(barmode='stack')
         elif conf['tipo'] == 'Barras 100%':
@@ -80,7 +84,7 @@ def motor_visualizacion(df, conf):
             fig.update_layout(barmode='group')
             
     elif conf['tipo'] == 'Líneas':
-        fig = px.line(df_grp.sort_values(eje_x), x=eje_x, y='Valor', color=eje_color, markers=True, template="plotly_white")
+        fig = px.line(df_grp, x=eje_x, y='Valor', color=eje_color, markers=True, template="plotly_white")
         
     elif conf['tipo'] == 'Dona':
         fig = px.pie(df_grp, names=eje_x, values='Valor', hole=0.4, template="plotly_white")
@@ -100,7 +104,6 @@ def main():
         st.warning("Base de datos vacía. Ejecute el manager para cargar datos.")
         st.stop()
 
-    # --- PANEL LATERAL ---
     st.sidebar.header("Modo")
     modo_vista = st.sidebar.radio("", ["Constructor", "Visor de Reportes"])
     st.sidebar.divider()
@@ -109,14 +112,14 @@ def main():
     df_filtrado = df.copy()
     for col in CONFIG["columnas_filtro"]:
         if col in df.columns:
-            opciones = sorted(df[col].dropna().astype(str).unique())
+            # Rellenamos nulos temporalmente solo para armar la lista de opciones y buscar coincidencias
+            opciones = sorted(df[col].fillna("Sin Especificar").astype(str).unique())
             seleccion = st.sidebar.multiselect(f"{col}:", opciones, default=[])
             if seleccion:
-                df_filtrado = df_filtrado[df_filtrado[col].isin(seleccion)]
+                df_filtrado = df_filtrado[df_filtrado[col].fillna("Sin Especificar").astype(str).isin(seleccion)]
 
     st.sidebar.markdown(f"**Registros:** {len(df_filtrado)}")
 
-    # --- MODO CONSTRUCTOR ---
     if modo_vista == "Constructor":
         st.markdown("### Diseñar Visualización")
         
@@ -153,7 +156,6 @@ def main():
                 st.session_state['reportes_guardados'].append(conf_actual)
                 st.success("Visualización guardada.")
 
-    # --- MODO VISOR DE REPORTES ---
     elif modo_vista == "Visor de Reportes":
         st.markdown("### Reporte Consolidado")
         
